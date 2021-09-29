@@ -1,16 +1,17 @@
 import ctypes
 import struct
-
+from trio import socket
 
 buf = None
 
 
-def create_filter():
+def create_filter(target):
+    target = int.from_bytes(socket.inet_aton(target), 'big')
     BPF_FILTER = [
         [ 0x28, 0, 0, 0x0000000c ],
         [ 0x15, 0, 12, 0x00000800 ],
         [ 0x20, 0, 0, 0x0000001a ],
-        [ 0x15, 0, 10, 0xc0a80101 ],
+        [ 0x15, 0, 10, target ],
         [ 0x30, 0, 0, 0x00000017 ],
         [ 0x15, 2, 0, 0x00000084 ],
         [ 0x15, 1, 0, 0x00000006 ],

@@ -44,9 +44,9 @@ def create_send_sock():
     return send_sock
 
 
-def create_recv_sock():
+def create_recv_sock(target):
     recv_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, 0x0800)
-    fprog = create_filter()
+    fprog = create_filter(target)
     recv_sock.setsockopt(socket.SOL_SOCKET, 26, fprog)
     return recv_sock
 

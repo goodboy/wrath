@@ -16,11 +16,12 @@ from wrath.core import receiver
 @contextlib.asynccontextmanager
 async def worker_pool(portals, status, workers=4):
     async def runner(func, ports):
-        async def run(func, portal, target, batch):
+        async def run(func, portal, target, batch, task_status=trio.TASK_STATUS_IGNORED):
+            task_status.started()
             await portal.run(func, target=target, batch=batch, status=status)
 
         async with trio.open_nursery() as n:
-            await n.start(receiver, status)
+            await n.start(receiver, status, target)
             for batch, portal in zip(more_itertools.sliced(ports, len(ports) // workers), itertools.cycle(portals)):
                 n.start_soon(run, batchworker, portal, target, batch)
         
@@ -29,7 +30,7 @@ async def worker_pool(portals, status, workers=4):
 
 @contextlib.asynccontextmanager
 async def create_portals(workers=4):
-    async with tractor.open_nursery(start_method='forkserver') as tn:
+    async with tractor.open_nursery() as tn:
 
         portals = []
 
@@ -40,11 +41,11 @@ async def create_portals(workers=4):
                     enable_modules=['wrath.core']
                 )
             )
-
+        
         yield portals
         
         await tn.cancel(hard_kill=True)
-
+ 
 
 async def main(target, intervals) -> None:
     status = {
