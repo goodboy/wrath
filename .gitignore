@@ -1,3 +1,10 @@
 env/
+env-pypy/
+pypy-env/
 __pycache__/
 *.pyc
+notes.txt
+times.txt
+temp.dat
+callgraph.svg
+.python-version
