@@ -8,51 +8,89 @@ from wrath.net import build_tcp_packet
 from wrath.net import unpack
 
 
-async def batchworker(target, batch):
-    print('inside batch')
-    status = {
-        port: {'sent': False, 'recv': False, 'retry': 0}
-        for port in batch
-    }
+@tractor.context
+async def microsender(ctx: tractor.Context, target, status):
+    print('dbg! microsender: inside')
+    await ctx.started()
+    print('dbg! microsender: called ctx.started()')
     ipv4_packet = build_ipv4_packet(target)
-    while True:
-        ports = [port for port, info in status.items() if not info['recv'] and info['retry'] <= 3]
-        if not ports:
-            break
-        async with trio.open_nursery() as nursery:
-            await nursery.start(receiver, target, status)
-            limiter = trio.CapacityLimiter(4096)
-            for port in ports:
-                async with limiter:
-                    nursery.start_soon(microsender, target, port, ipv4_packet, status)
+    send_sock = create_send_sock()
+    print('dbg! microsender: built ipv4 packet and send sock')
+    print('dbg! microsender: opening stream')
+    async with ctx.open_stream() as stream:
+        print('dbg! microsender: opened stream')
+        async for port in stream:
+            print('dbg! microsender: got port %d' % port)
+            tcp_packet = build_tcp_packet(target, port)
+            await send_sock.sendto(ipv4_packet + tcp_packet, (target, port))
+            status[port]['sent'] = True
+            status[port]['retry'] += 1
 
 
-async def receiver(target, status, task_status=trio.TASK_STATUS_IGNORED):
+@tractor.context
+async def batchworker(ctx: tractor.Context, target):
+    print('dbg! batchworker: inside')
+    async with tractor.open_nursery() as tn:
+        print('dbg! batchworker: starting streamer actor')
+        p = await tn.start_actor('streamer', enable_modules=[__name__])
+        print('dbg! batchworker: started streamer actor')
+
+        print('dbg! batchworker: opening parent stream')
+        async with (
+            ctx.open_stream() as parent_stream,
+        ):
+            print('dbg! batchworker: opened parent stream')
+            await trio.sleep(0)
+            print('dbg! batchworker: about to loop over parent stream')
+            async for batch in parent_stream:
+                print('dbg! batchworker: inside async for loop, about to define status dict')
+                status = {
+                    port: {'sent': False, 'recv': False, 'retry': 0}
+                    for port in batch
+                }
+                print('dbg! batchworker: inside async for loop, defined status dict')
+                print('dbg! batchworker: inside async for loop, opening stream to microsender')
+                async with (
+                    p.open_context(
+                        microsender,
+                        target=target,
+                        status=status
+                    ) as (ctx2, _),
+
+                    ctx2.open_stream() as stream,
+                ):
+                    print('dbg! batchworker: inside async for loop, opened stream to microsender, about to send ports to microsender stream')
+                    for port in batch:
+                        print('dbg! batchworker: inside async for loop, opened stream to microsender, sending port %d to stream' % port)
+                        await stream.send(port)
+
+        print('dbg! batchworker: cancelling actor')
+        await p.cancel_actor()
+        print('dbg! batchworker: cancelled actor')
+
+
+async def receiver(target, task_status=trio.TASK_STATUS_IGNORED):
+    print('dbg! receiver: inside')
     task_status.started()
+    print('dbg! receiver: called task_status.started()')
     recv_sock = create_recv_sock(target)
+    print('dbg! receiver: created recv sock, about to bind')
     await recv_sock.bind(('enp5s0', 0x0800))
+    print('dbg! receiver: bound recv sock')
     while not recv_sock.is_readable():
         await trio.sleep(0.1)
-    ports = {port for port in status.keys()}
     while True:
+        print('dbg! receiver: recv sock readable')
         with trio.move_on_after(0.25) as cancel_scope:
             response = await recv_sock.recv(1024 * 16)
         if cancel_scope.cancelled_caught:
             break
         src, flags = unpack(response)
-        if src not in ports:
-            continue
         if flags == 18:
             print('port %d: open' % src)
-            status[src]['recv'] = True
+            yield src
         elif flags == 20:
             print('port %d: closed' % src)
-            status[src]['recv'] = True
+            yield src
 
 
-async def microsender(target, port, ipv4_packet, status):
-    send_sock = create_send_sock()
-    tcp_packet = build_tcp_packet(target, port)
-    await send_sock.sendto(ipv4_packet + tcp_packet, (target, port))
-    status[port]['sent'] = True
-    status[port]['retry'] += 1
