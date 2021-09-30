@@ -8,46 +8,43 @@ from wrath.net import build_tcp_packet
 from wrath.net import unpack
 
 
-async def batchworker(target, batch):
-    print('inside batch')
-    status = {
-        port: {'sent': False, 'recv': False, 'retry': 0}
-        for port in batch
-    }
+
+
+@tractor.context
+async def batchworker(ctx: tractor.Context, target):
+    await ctx.started()
     ipv4_packet = build_ipv4_packet(target)
-    while True:
-        ports = [port for port, info in status.items() if not info['recv'] and info['retry'] <= 3]
-        if not ports:
-            break
-        async with trio.open_nursery() as nursery:
-            await nursery.start(receiver, target, status)
-            limiter = trio.CapacityLimiter(4096)
-            for port in ports:
-                async with limiter:
-                    nursery.start_soon(microsender, target, port, ipv4_packet, status)
+    async with ctx.open_stream() as stream:
+        async for batch in stream:
+            status = {
+                port: {'sent': False, 'recv': False, 'retry': 0}
+                for port in batch
+            }
+            async with trio.open_nursery() as nursery:
+                limiter = trio.CapacityLimiter(4096)
+                for port in batch:
+                    async with limiter:
+                        nursery.start_soon(microsender, target, port, ipv4_packet, status)
+            await stream.send(status)
 
 
-async def receiver(target, status, task_status=trio.TASK_STATUS_IGNORED):
-    task_status.started()
+async def receiver(target, status):
     recv_sock = create_recv_sock(target)
     await recv_sock.bind(('enp5s0', 0x0800))
     while not recv_sock.is_readable():
         await trio.sleep(0.1)
-    ports = {port for port in status.keys()}
     while True:
         with trio.move_on_after(0.25) as cancel_scope:
             response = await recv_sock.recv(1024 * 16)
         if cancel_scope.cancelled_caught:
             break
         src, flags = unpack(response)
-        if src not in ports:
-            continue
         if flags == 18:
-            print('port %d: open' % src)
             status[src]['recv'] = True
+            yield (src, True)
         elif flags == 20:
-            print('port %d: closed' % src)
             status[src]['recv'] = True
+            yield (src, False)
 
 
 async def microsender(target, port, ipv4_packet, status):

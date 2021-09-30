@@ -1,12 +1,10 @@
 import itertools
 import functools
-import math
 import contextlib
 
 import more_itertools
 import trio
 import tractor
-from async_generator import aclosing
 
 from wrath.cli import parse_args
 from wrath.core import batchworker
@@ -32,6 +30,11 @@ async def create_portals(workers=4):
                     enable_modules=['wrath.core']
                 )
             )
+        
+        portals.append(await tn.start_actor(
+            'receiver',
+            enable_modules=['wrath.core']
+        ))
                 
         yield portals
         
@@ -39,7 +42,6 @@ async def create_portals(workers=4):
  
 
 async def main(target, intervals, workers=4) -> None:
-    print('hit main')
     status = {
         port: {'sent': False, 'recv': False, 'retry': 0}
         for interval in intervals
@@ -48,10 +50,39 @@ async def main(target, intervals, workers=4) -> None:
 
     ports = [port for port in status.keys()]
 
-    async with create_portals() as portals:
-        await runner(batchworker, portals, target, ports)
+    async with (
+        create_portals() as portals,
 
-    print('exiting main')
+        portals[0].open_context(batchworker, target=target) as (ctx0, _),
+        portals[1].open_context(batchworker, target=target) as (ctx1, _),
+        portals[2].open_context(batchworker, target=target) as (ctx2, _),
+        portals[3].open_context(batchworker, target=target) as (ctx3, _),
+
+        ctx0.open_stream() as stream0,
+        ctx1.open_stream() as stream1,
+        ctx2.open_stream() as stream2,
+        ctx3.open_stream() as stream3,
+
+        portals[4].open_stream_from(receiver, target=target, status=status) as recv_stream
+    ):
+        streams = [stream0, stream1, stream2, stream3]
+        while True:
+            ports = [port for port, info in status.items() if not info['recv'] and info['retry'] <= 3]
+            if not ports:
+                break
+            for stream in streams:
+                with trio.move_on_after(0.25):
+                    msg = await stream.receive()                
+                    status.update(msg)
+            with trio.move_on_after(0.25):
+                msg_from_recvr = await recv_stream.receive()
+                port, state = msg_from_recvr
+                status[port]['recv'] = True
+                print('port %d: %s' % (port, 'open' if state else 'closed'))
+
+            for batch, stream in zip(more_itertools.sliced(ports, len(ports) // workers), itertools.cycle(streams)):
+                await stream.send(batch)
+
 
 if __name__ == '__main__':
     target, intervals, ports = parse_args()
