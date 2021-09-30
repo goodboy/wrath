@@ -1,12 +1,10 @@
 import itertools
 import functools
-import math
 import contextlib
 
 import more_itertools
 import trio
 import tractor
-from async_generator import aclosing
 
 from wrath.cli import parse_args
 from wrath.core import batchworker
@@ -37,31 +35,34 @@ async def create_portals(workers=4):
                 
         yield portals
         
-        await tn.cancel(hard_kill=True)
+        await tn.cancel()
  
 
-print('dbg! main: defined status dict')
-print('dbg! main: defining recv_from_receiver')
+# print('dbg! main: defined status dict')
+# print('dbg! main: defining recv_from_receiver')
 async def recv_from_receiver(stream, status, task_status=trio.TASK_STATUS_IGNORED):
-    print('dbg! recv_from_receiver: inside')
+    packets_received = 0
+    # print('dbg! recv_from_receiver: inside')
     task_status.started()
-    print('dbg! recv_from_receiver: task_status.started()')
+    #print('dbg! recv_from_receiver: task_status.started()')
     async for port in stream:
-        print('dbg! recv_from_receiver: got a port %d' % port)
+        packets_received += 1
+        print('packets received: %d' % packets_received)
+        # print('dbg! recv_from_receiver: got a port %d' % port)
         status[port]['recv'] = True
-    print('dbg! recv_from_receiver: exiting %d' % port)
+        # print('dbg! recv_from_receiver: exiting %d' % port)
 
 
 
 async def main(target, intervals, workers=4) -> None:
-    print('dbg! main: inside')
+    # print('dbg! main: inside')
     status = {
         port: {'sent': False, 'recv': False, 'retry': 0}
         for interval in intervals
         for port in range(*interval)
     }
 
-    print('dbg! main: in front of big async with')
+    # print('dbg! main: in front of big async with')
     async with (
         trio.open_nursery() as nursery,
 
@@ -81,18 +82,19 @@ async def main(target, intervals, workers=4) -> None:
         portals[4].open_stream_from(receiver, target=target) as recv_stream,
     ):
         streams = [stream0, stream1, stream2, stream3]
-        print('dbg! main: inside big async with')
-        print('dbg! main: starting recv_from_receiver')
+        # print('dbg! main: inside big async with')
+        # print('dbg! main: starting recv_from_receiver')
         await nursery.start(recv_from_receiver, recv_stream, status)
-        print('dbg! main: started recv_from_receiver')
+        # print('dbg! main: started recv_from_receiver')
         while True:
-            print('dbg! main: inside while True loop')
-            ports = [port for port, info in status.items() if not info['recv'] and info['retry'] <= 3]
+            # print('dbg! main: inside while True loop')
+            ports = [port for port, info in status.items() if not info['recv']]
+            print(not ports)
             if not ports:
-                print('dbg! main: inside while True loop, no ports, breaking')
                 break
+                # print('dbg! main: inside while True loop, no ports, breaking'
             for batch, stream in zip(more_itertools.sliced(ports, len(ports) // workers), itertools.cycle(streams)):
-                print('dbg! main: inside while True loop, insider for loop, sending to stream')
+                # print('dbg! main: inside while True loop, insider for loop, sending to stream')
                 await stream.send(batch)
     print('dbg! main: after big async with')
 
