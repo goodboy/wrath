@@ -91,9 +91,9 @@ async def main(target, intervals, workers=4) -> None:
             if not ports:
                 print('dbg! main: inside while True loop, no ports, breaking')
                 break
-                for batch, stream in zip(more_itertools.sliced(ports, len(ports) // workers), itertools.cycle(streams)):
-                    print('dbg! main: inside while True loop, insider for loop, sending to stream')
-                    await stream.send(batch)
+            for batch, stream in zip(more_itertools.sliced(ports, len(ports) // workers), itertools.cycle(streams)):
+                print('dbg! main: inside while True loop, insider for loop, sending to stream')
+                await stream.send(batch)
     print('dbg! main: after big async with')
 
 if __name__ == '__main__':
